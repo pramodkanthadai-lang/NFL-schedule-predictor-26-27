@@ -1,5 +1,3 @@
-# NFL-schedule-predictor-26-27
-Predict every game of the 2026 nfl season
 # 🏈 NFL 2026 Schedule Predictor
 
 A professional, feature-rich application for predicting the entire 2026 NFL season. Predict game outcomes for all 32 teams and watch records update in real-time.
