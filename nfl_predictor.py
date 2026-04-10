@@ -15,7 +15,10 @@ Version: 1.0.0
 """
 
 import tkinter as tk
-from tkinter import ttk, messagebox
+from tkinter import ttk, messagebox, simpledialog
+import json
+import os
+from datetime import datetime
 from nfl_schedule_data import NFL_SCHEDULE, normalize_team_name
 
 
@@ -87,6 +90,13 @@ class NFLPredictor:
         self.team_labels = {}        # Store references to team header buttons
         self.team_frames = {}        # Store references to team containers
         self.games_frames = {}       # Store references to games display frames
+        
+        # =====================
+        # Predictions File Storage
+        # =====================
+        self.predictions_dir = "saved_predictions"
+        if not os.path.exists(self.predictions_dir):
+            os.makedirs(self.predictions_dir)
         
         # Build the user interface
         self.create_ui()
@@ -168,15 +178,56 @@ class NFLPredictor:
         canvas.pack(side="left", fill=tk.BOTH, expand=True)
         scrollbar.pack(side="right", fill="y")
         
+        # Enable mouse wheel scrolling
+        self.bind_mousewheel(canvas)
+        
         # ==================
         # Footer Section
         # ==================
         footer_frame = tk.Frame(self.root, bg=ColorPalette.DARK_ACCENT, relief=tk.RAISED, bd=1)
         footer_frame.pack(fill=tk.X, side=tk.BOTTOM)
         
+        # Button container for better layout
+        button_container = tk.Frame(footer_frame, bg=ColorPalette.DARK_ACCENT)
+        button_container.pack(pady=10)
+        
+        # Save Button - for saving current predictions
+        save_button = tk.Button(
+            button_container,
+            text="💾 Save Predictions",
+            command=self.save_predictions,
+            bg="#2196F3",
+            fg="#ffffff",
+            font=("Segoe UI", 11, "bold"),
+            padx=20,
+            pady=10,
+            relief=tk.FLAT,
+            cursor="hand2",
+            activebackground="#1976D2",
+            activeforeground="#ffffff"
+        )
+        save_button.pack(side=tk.LEFT, padx=5)
+        
+        # View Button - for viewing saved predictions
+        view_button = tk.Button(
+            button_container,
+            text="📋 View Saved",
+            command=self.show_saved_predictions,
+            bg="#4CAF50",
+            fg="#ffffff",
+            font=("Segoe UI", 11, "bold"),
+            padx=20,
+            pady=10,
+            relief=tk.FLAT,
+            cursor="hand2",
+            activebackground="#45a049",
+            activeforeground="#ffffff"
+        )
+        view_button.pack(side=tk.LEFT, padx=5)
+        
         # Reset Button - for clearing all predictions
         reset_button = tk.Button(
-            footer_frame,
+            button_container,
             text="↻ Reset All Predictions",
             command=self.reset_all,
             bg=ColorPalette.DANGER,
@@ -189,7 +240,36 @@ class NFLPredictor:
             activebackground="#c0392b",
             activeforeground="#ffffff"
         )
-        reset_button.pack(pady=10)
+        reset_button.pack(side=tk.LEFT, padx=5)
+    
+    def bind_mousewheel(self, widget):
+        """
+        Enable mouse wheel scrolling for a canvas widget.
+        
+        Binds mouse wheel events to allow scrolling with the scroll wheel.
+        Works on Windows and Linux.
+        
+        Args:
+            widget (tk.Canvas): The canvas widget to enable scrolling on
+        """
+        def _on_mousewheel(event):
+            # Windows uses MouseWheel event with delta values
+            # Positive delta = scroll up, negative = scroll down
+            canvas.yview_scroll(int(-1*(event.delta/120)), "units")
+        
+        def _on_mousewheel_linux(event):
+            # Linux uses Button-4 (scroll up) and Button-5 (scroll down)
+            if event.num == 4:
+                canvas.yview_scroll(-3, "units")
+            elif event.num == 5:
+                canvas.yview_scroll(3, "units")
+        
+        canvas = widget
+        # Bind Windows mouse wheel
+        canvas.bind("<MouseWheel>", _on_mousewheel)
+        # Bind Linux mouse wheel
+        canvas.bind("<Button-4>", _on_mousewheel_linux)
+        canvas.bind("<Button-5>", _on_mousewheel_linux)
     
     def create_collapsible_team(self, parent, team_name):
         """
@@ -557,15 +637,26 @@ class NFLPredictor:
                 continue
                 
             if result == "home_win":
-                # Home team (team1) won, away team (team2) lost
-                self.team_records[team1]["wins"] += 1
-                self.team_records[team2]["losses"] += 1
+                # Home team won, away team lost
+                if zone == "home":
+                    # team1 is at home and won
+                    self.team_records[team1]["wins"] += 1
+                    self.team_records[team2]["losses"] += 1
+                else:  # zone == "away"
+                    # team1 is away, so team2 (at home) won
+                    self.team_records[team2]["wins"] += 1
+                    self.team_records[team1]["losses"] += 1
                 
             elif result == "away_win":
-                # Away team (team1) lost, home team (team2) won
-                # In this context, team1 represents the away team
-                self.team_records[team1]["losses"] += 1
-                self.team_records[team2]["wins"] += 1
+                # Away team won, home team lost
+                if zone == "home":
+                    # team2 is away and won
+                    self.team_records[team2]["wins"] += 1
+                    self.team_records[team1]["losses"] += 1
+                else:  # zone == "away"
+                    # team1 is away and won
+                    self.team_records[team1]["wins"] += 1
+                    self.team_records[team2]["losses"] += 1
                 
             elif result == "tie":
                 # Both teams get a tie
@@ -589,6 +680,298 @@ class NFLPredictor:
                 
                 # Update button text with new record
                 button.config(text=f"{arrow} {team_name} ({record_str})")
+    
+    def save_predictions(self):
+        """
+        Save current predictions to a JSON file with a user-provided name.
+        
+        Prompts the user to enter a name for the prediction set, then saves
+        all current game results and team records to a timestamped JSON file.
+        """
+        # Prompt user for a name
+        name = simpledialog.askstring(
+            "Save Predictions",
+            "Enter a name for this prediction set:"
+        )
+        
+        if not name:
+            return  # User cancelled
+        
+        if not name.strip():
+            messagebox.showerror("Invalid Name", "Please enter a valid name.")
+            return
+        
+        # Create filename with timestamp
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"{name.strip().replace(' ', '_')}_{timestamp}.json"
+        filepath = os.path.join(self.predictions_dir, filename)
+        
+        # Prepare data to save
+        save_data = {
+            "name": name.strip(),
+            "timestamp": datetime.now().isoformat(),
+            "game_results": {str(k): v for k, v in self.game_results.items()},
+            "team_records": self.team_records
+        }
+        
+        # Save to file
+        try:
+            with open(filepath, 'w') as f:
+                json.dump(save_data, f, indent=2)
+            messagebox.showinfo("Success", f"Predictions saved as '{name}'")
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to save predictions: {str(e)}")
+    
+    def show_saved_predictions(self):
+        """
+        Display a window showing all saved prediction sets.
+        
+        Creates a new window with a list of saved predictions that can be
+        viewed or loaded.
+        """
+        # Get all saved prediction files
+        saved_files = []
+        if os.path.exists(self.predictions_dir):
+            saved_files = [f for f in os.listdir(self.predictions_dir) if f.endswith('.json')]
+            saved_files.sort(reverse=True)  # Most recent first
+        
+        if not saved_files:
+            messagebox.showinfo("No Saved Predictions", "You haven't saved any predictions yet.")
+            return
+        
+        # Create a new window
+        view_window = tk.Toplevel(self.root)
+        view_window.title("Saved Predictions")
+        view_window.geometry("600x500")
+        view_window.configure(bg=ColorPalette.LIGHT_BG)
+        
+        # Header
+        header = tk.Label(
+            view_window,
+            text="📋 Saved Predictions",
+            font=("Segoe UI", 16, "bold"),
+            bg=ColorPalette.DARK_HEADER,
+            fg="#ffffff",
+            pady=12
+        )
+        header.pack(fill=tk.X)
+        
+        # Create scrollable frame
+        main_frame = tk.Frame(view_window, bg=ColorPalette.LIGHT_BG)
+        main_frame.pack(fill=tk.BOTH, expand=True, padx=12, pady=12)
+        
+        canvas = tk.Canvas(
+            main_frame,
+            bg=ColorPalette.LIGHT_BG,
+            highlightthickness=0,
+            relief=tk.FLAT
+        )
+        
+        scrollbar = ttk.Scrollbar(main_frame, orient="vertical", command=canvas.yview)
+        scrollable_frame = tk.Frame(canvas, bg=ColorPalette.LIGHT_BG)
+        
+        scrollable_frame.bind(
+            "<Configure>",
+            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
+        )
+        
+        canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
+        canvas.configure(yscrollcommand=scrollbar.set)
+        
+        # Display each saved prediction
+        for filename in saved_files:
+            filepath = os.path.join(self.predictions_dir, filename)
+            try:
+                with open(filepath, 'r') as f:
+                    data = json.load(f)
+                
+                # Create a frame for this prediction
+                pred_frame = tk.Frame(
+                    scrollable_frame,
+                    bg=ColorPalette.WHITE,
+                    relief=tk.FLAT,
+                    bd=0,
+                    highlightthickness=1,
+                    highlightbackground=ColorPalette.BORDER
+                )
+                pred_frame.pack(fill=tk.X, pady=6, padx=4)
+                
+                # Parse timestamp
+                ts = datetime.fromisoformat(data["timestamp"])
+                ts_str = ts.strftime("%B %d, %Y at %I:%M %p")
+                
+                # Calculate overall record
+                total_wins = sum(r["wins"] for r in data["team_records"].values())
+                total_losses = sum(r["losses"] for r in data["team_records"].values())
+                total_ties = sum(r["ties"] for r in data["team_records"].values())
+                
+                # Info label
+                info_text = f"{data['name']} • {ts_str}\nOverall: {total_wins}W - {total_losses}L - {total_ties}T"
+                info_label = tk.Label(
+                    pred_frame,
+                    text=info_text,
+                    font=("Segoe UI", 10),
+                    bg=ColorPalette.WHITE,
+                    fg=ColorPalette.TEXT_PRIMARY,
+                    anchor="w",
+                    justify=tk.LEFT,
+                    padx=12,
+                    pady=10
+                )
+                info_label.pack(fill=tk.X)
+                
+                # Button to view details
+                def view_details(filepath=filepath, data=data):
+                    self.show_prediction_details(data)
+                
+                button_frame = tk.Frame(pred_frame, bg=ColorPalette.WHITE)
+                button_frame.pack(fill=tk.X, padx=12, pady=(0, 10))
+                
+                view_btn = tk.Button(
+                    button_frame,
+                    text="View Details",
+                    command=view_details,
+                    bg="#2196F3",
+                    fg="#ffffff",
+                    font=("Segoe UI", 9, "bold"),
+                    relief=tk.FLAT,
+                    cursor="hand2",
+                    padx=10,
+                    pady=5
+                )
+                view_btn.pack(side=tk.LEFT, padx=2)
+                
+                def load_predictions(data=data):
+                    if messagebox.askyesno("Load Predictions", "Load this prediction set? Current predictions will be replaced."):
+                        self.load_predictions_from_data(data)
+                        view_window.destroy()
+                
+                load_btn = tk.Button(
+                    button_frame,
+                    text="Load",
+                    command=load_predictions,
+                    bg="#4CAF50",
+                    fg="#ffffff",
+                    font=("Segoe UI", 9, "bold"),
+                    relief=tk.FLAT,
+                    cursor="hand2",
+                    padx=10,
+                    pady=5
+                )
+                load_btn.pack(side=tk.LEFT, padx=2)
+                
+            except Exception as e:
+                continue
+        
+        canvas.pack(side="left", fill=tk.BOTH, expand=True)
+        scrollbar.pack(side="right", fill="y")
+    
+    def show_prediction_details(self, data):
+        """
+        Display detailed team records for a saved prediction set.
+        
+        Args:
+            data (dict): The prediction data to display
+        """
+        # Create a new window
+        details_window = tk.Toplevel(self.root)
+        details_window.title(f"Details: {data['name']}")
+        details_window.geometry("500x600")
+        details_window.configure(bg=ColorPalette.LIGHT_BG)
+        
+        # Header
+        header = tk.Label(
+            details_window,
+            text=f"📊 {data['name']}",
+            font=("Segoe UI", 14, "bold"),
+            bg=ColorPalette.DARK_HEADER,
+            fg="#ffffff",
+            pady=10
+        )
+        header.pack(fill=tk.X)
+        
+        # Create scrollable frame
+        main_frame = tk.Frame(details_window, bg=ColorPalette.LIGHT_BG)
+        main_frame.pack(fill=tk.BOTH, expand=True, padx=12, pady=12)
+        
+        canvas = tk.Canvas(
+            main_frame,
+            bg=ColorPalette.LIGHT_BG,
+            highlightthickness=0,
+            relief=tk.FLAT
+        )
+        
+        scrollbar = ttk.Scrollbar(main_frame, orient="vertical", command=canvas.yview)
+        scrollable_frame = tk.Frame(canvas, bg=ColorPalette.LIGHT_BG)
+        
+        scrollable_frame.bind(
+            "<Configure>",
+            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
+        )
+        
+        canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
+        canvas.configure(yscrollcommand=scrollbar.set)
+        
+        # Display team records
+        for team_name in sorted(data["team_records"].keys()):
+            record = data["team_records"][team_name]
+            w, l, t = record["wins"], record["losses"], record["ties"]
+            
+            # Create team frame
+            team_frame = tk.Frame(
+                scrollable_frame,
+                bg=ColorPalette.WHITE,
+                relief=tk.FLAT,
+                bd=0,
+                highlightthickness=1,
+                highlightbackground=ColorPalette.BORDER
+            )
+            team_frame.pack(fill=tk.X, pady=4, padx=2)
+            
+            # Team record
+            record_str = f"{w}-{l}-{t}" if t > 0 else f"{w}-{l}"
+            team_label = tk.Label(
+                team_frame,
+                text=f"{team_name}: {record_str}",
+                font=("Segoe UI", 10),
+                bg=ColorPalette.WHITE,
+                fg=ColorPalette.TEXT_PRIMARY,
+                anchor="w",
+                padx=12,
+                pady=8
+            )
+            team_label.pack(fill=tk.X)
+        
+        canvas.pack(side="left", fill=tk.BOTH, expand=True)
+        scrollbar.pack(side="right", fill="y")
+    
+    def load_predictions_from_data(self, data):
+        """
+        Load a saved prediction set and update the UI.
+        
+        Args:
+            data (dict): The prediction data to load
+        """
+        # Clear current predictions
+        self.game_results = {}
+        
+        # Load game results (convert string keys back to tuples)
+        for key_str, result in data["game_results"].items():
+            # Parse the string representation of tuple
+            # Format: "(team1, team2, zone)"
+            key_str = key_str.strip("()")
+            parts = [p.strip().strip("'\"") for p in key_str.split(",")]
+            if len(parts) == 3:
+                key = (parts[0], parts[1], parts[2])
+                self.game_results[key] = result
+        
+        # Update all game displays and records
+        if hasattr(self, 'game_boxes'):
+            for game_key in self.game_boxes.keys():
+                self.update_game_display(game_key)
+        
+        self.update_records()
+        messagebox.showinfo("Success", "Predictions loaded successfully!")
     
     def reset_all(self):
         """
